@@ -1,0 +1,11 @@
+media/*.mp4
+media/analysis/
+media/frames/
+media/out/work/
+media/out/*.mp4
+media/out/test_*
+media/out/*.log
+media/out/bg_still.jpg
+__pycache__/
+*.wav
+*.mp3
