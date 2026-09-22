@@ -20,6 +20,7 @@ SALES_ITEMS = DATA_DIR / "sales_items.csv"
 PURCHASES = DATA_DIR / "purchases.csv"
 PURCHASE_ITEMS = DATA_DIR / "purchase_items.csv"
 BUYERS = DATA_DIR / "buyers.csv"
+ITEMS = DATA_DIR / "items.csv"
 
 SALES_INVOICE_FIELDS = [
     "inum",
@@ -40,6 +41,15 @@ BUYER_FIELDS = [
     "buyer_gstin",
     "buyer_addr",
     "buyer_phone",
+]
+
+ITEM_FIELDS = [
+    "item_name",
+    "hsn",
+    "uqc",
+    "rate",
+    "gst_pct",
+    "stock_qty",
 ]
 
 SALES_ITEM_FIELDS = [
@@ -109,6 +119,7 @@ def ensure_data_files() -> None:
         (PURCHASES, PURCHASE_FIELDS),
         (PURCHASE_ITEMS, PURCHASE_ITEM_FIELDS),
         (BUYERS, BUYER_FIELDS),
+        (ITEMS, ITEM_FIELDS),
     ):
         _migrate_csv_columns(path, fields)
 
@@ -159,6 +170,144 @@ def upsert_buyer(
     else:
         rows[idx] = payload
     rewrite_csv(BUYERS, BUYER_FIELDS, rows)
+
+
+def item_label(row: dict[str, str]) -> str:
+    name = (row.get("item_name") or "").strip() or "(unnamed)"
+    stock = fnum(row.get("stock_qty"))
+    uqc = (row.get("uqc") or "OTH").strip() or "OTH"
+    return f"{name} · stock {stock:g} {uqc}"
+
+
+def find_item_index(rows: list[dict[str, str]], name: str) -> int | None:
+    name_n = name.strip().lower()
+    if not name_n:
+        return None
+    for i, row in enumerate(rows):
+        if (row.get("item_name") or "").strip().lower() == name_n:
+            return i
+    return None
+
+
+def upsert_item(
+    name: str,
+    hsn: str,
+    uqc: str,
+    rate: float,
+    gst_pct: float,
+    stock_qty: float | None = None,
+    *,
+    stock_delta: float | None = None,
+) -> dict[str, str]:
+    """Insert/update item master. Set absolute stock_qty or apply stock_delta."""
+    ensure_data_files()
+    rows = read_csv(ITEMS)
+    idx = find_item_index(rows, name)
+    if idx is None:
+        current = 0.0
+        if stock_qty is not None:
+            current = float(stock_qty)
+        elif stock_delta is not None:
+            current = float(stock_delta)
+        payload = {
+            "item_name": name.strip(),
+            "hsn": hsn.strip(),
+            "uqc": (uqc or "OTH").strip() or "OTH",
+            "rate": f"{money(rate):.2f}",
+            "gst_pct": f"{money(gst_pct):.2f}",
+            "stock_qty": f"{money(current):.2f}",
+        }
+        rows.append(payload)
+    else:
+        existing = rows[idx]
+        current = fnum(existing.get("stock_qty"))
+        if stock_qty is not None:
+            current = float(stock_qty)
+        elif stock_delta is not None:
+            current = money(current + float(stock_delta))
+        payload = {
+            "item_name": name.strip(),
+            "hsn": hsn.strip() or existing.get("hsn", ""),
+            "uqc": (uqc or existing.get("uqc") or "OTH").strip() or "OTH",
+            "rate": f"{money(rate):.2f}",
+            "gst_pct": f"{money(gst_pct):.2f}",
+            "stock_qty": f"{money(current):.2f}",
+        }
+        rows[idx] = payload
+    rewrite_csv(ITEMS, ITEM_FIELDS, rows)
+    return payload
+
+
+def stock_shortfalls(lines: list[dict[str, Any]]) -> list[str]:
+    """Return human-readable errors for sale lines that exceed stock.
+
+    Qty is compared in the item's stored UQC (no dozen↔piece conversion).
+    Custom lines not in the items master are skipped (stock not tracked).
+    """
+    rows = read_csv(ITEMS)
+    # Aggregate demand by item name for multi-line same SKU
+    demand: dict[str, float] = {}
+    for line in lines:
+        name = (line.get("item_name") or "").strip()
+        if not name:
+            continue
+        demand[name.lower()] = money(demand.get(name.lower(), 0.0) + fnum(line.get("qty")))
+
+    errors: list[str] = []
+    for name_l, need in demand.items():
+        idx = None
+        for i, row in enumerate(rows):
+            if (row.get("item_name") or "").strip().lower() == name_l:
+                idx = i
+                break
+        if idx is None:
+            continue
+        have = fnum(rows[idx].get("stock_qty"))
+        uqc = rows[idx].get("uqc") or "OTH"
+        if need > have + 1e-9:
+            errors.append(
+                f"{rows[idx].get('item_name')}: need {need:g} {uqc}, stock {have:g} {uqc}"
+            )
+    return errors
+
+
+def apply_sale_stock(lines: list[dict[str, Any]]) -> list[str]:
+    """Decrease stock for matched items. Returns names skipped (not in master)."""
+    skipped: list[str] = []
+    for line in lines:
+        name = (line.get("item_name") or "").strip()
+        if not name:
+            continue
+        rows = read_csv(ITEMS)
+        idx = find_item_index(rows, name)
+        if idx is None:
+            skipped.append(name)
+            continue
+        upsert_item(
+            name,
+            line.get("hsn") or rows[idx].get("hsn", ""),
+            line.get("uqc") or rows[idx].get("uqc", "OTH"),
+            fnum(line.get("rate"), fnum(rows[idx].get("rate"))),
+            fnum(line.get("gst_pct"), fnum(rows[idx].get("gst_pct"))),
+            stock_delta=-fnum(line.get("qty")),
+        )
+    return skipped
+
+
+def apply_purchase_stock(lines: list[dict[str, Any]]) -> None:
+    """Increase stock; create item master rows when missing."""
+    for line in lines:
+        name = (line.get("item_name") or "").strip()
+        if not name:
+            continue
+        upsert_item(
+            name,
+            line.get("hsn") or "",
+            line.get("uqc") or "OTH",
+            fnum(line.get("rate")),
+            fnum(line.get("gst_pct"), 18.0),
+            stock_delta=fnum(line.get("qty")),
+        )
 
 
 def append_rows(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> None:

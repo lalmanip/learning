@@ -21,6 +21,8 @@ from store import (  # noqa: E402
     BUYER_FIELDS,
     BUYERS,
     DEFAULT_POS,
+    ITEM_FIELDS,
+    ITEMS,
     PURCHASE_FIELDS,
     PURCHASE_ITEM_FIELDS,
     PURCHASE_ITEMS,
@@ -32,15 +34,21 @@ from store import (  # noqa: E402
     SELLER_ADDR,
     SELLER_GSTIN,
     append_rows,
+    apply_purchase_stock,
+    apply_sale_stock,
     buyer_label,
     ensure_data_files,
+    fnum,
+    item_label,
     line_gst,
     line_taxable,
     money,
     read_csv,
     rewrite_csv,
     split_cgst_sgst,
+    stock_shortfalls,
     upsert_buyer,
+    upsert_item,
 )
 
 st.set_page_config(page_title="B R Machinery — GST MVP", layout="wide")
@@ -51,10 +59,11 @@ st.caption(f"{SELLER_ADDR} · GSTIN {SELLER_GSTIN}")
 
 page = st.sidebar.radio(
     "Menu",
-    ["Add sale", "Add purchase", "Buyers", "List documents", "Export GSTR JSON"],
+    ["Add sale", "Add purchase", "Buyers", "Items", "List documents", "Export GSTR JSON"],
 )
 
 NEW_BUYER = "— New buyer —"
+NEW_ITEM = "— Custom / new —"
 
 
 def _blank_line() -> dict:
@@ -65,6 +74,7 @@ def _blank_line() -> dict:
         "uqc": "OTH",
         "rate": 0.0,
         "gst_pct": 18.0,
+        "pick": NEW_ITEM,
     }
 
 
@@ -105,7 +115,14 @@ def _render_line_editor(key: str) -> list[dict]:
     if key not in st.session_state:
         st.session_state[key] = [_blank_line(), _blank_line(), _blank_line()]
 
+    inventory = read_csv(ITEMS)
+    inv_labels = [NEW_ITEM] + [item_label(r) for r in inventory]
+
     st.subheader("Line items")
+    st.caption(
+        "Pick from **Items** inventory to auto-fill HSN/rate/GST/UQC. "
+        "Qty is in the item’s stored UQC (no dozen↔piece conversion)."
+    )
     cols = st.columns([1, 1])
     if cols[0].button("Add line", key=f"{key}_add"):
         st.session_state[key].append(_blank_line())
@@ -116,16 +133,80 @@ def _render_line_editor(key: str) -> list[dict]:
 
     edited: list[dict] = []
     for i, line in enumerate(st.session_state[key]):
+        st.markdown(f"**Line {i + 1}**")
+        prev_pick = line.get("pick") or NEW_ITEM
+        # Keep select index stable when stock labels change after saves
+        pick_options = inv_labels
+        if prev_pick not in pick_options and prev_pick != NEW_ITEM:
+            # Fall back to matching by item name prefix before " · stock"
+            name_hint = prev_pick.split(" · stock")[0].strip().lower()
+            matched = NEW_ITEM
+            for lab, row in zip(inv_labels[1:], inventory):
+                if (row.get("item_name") or "").strip().lower() == name_hint:
+                    matched = lab
+                    break
+            prev_pick = matched
+
+        pick = st.selectbox(
+            "Inventory item",
+            pick_options,
+            index=pick_options.index(prev_pick) if prev_pick in pick_options else 0,
+            key=f"{key}_pick_{i}",
+        )
+        applied_key = f"_{key}_pick_applied_{i}"
+        if pick != st.session_state.get(applied_key):
+            st.session_state[applied_key] = pick
+            if pick == NEW_ITEM:
+                line.update(_blank_line())
+                line["pick"] = NEW_ITEM
+            else:
+                inv = inventory[pick_options.index(pick) - 1]
+                line["item_name"] = inv.get("item_name", "")
+                line["hsn"] = inv.get("hsn", "")
+                line["uqc"] = inv.get("uqc") or "OTH"
+                line["rate"] = fnum(inv.get("rate"))
+                line["gst_pct"] = fnum(inv.get("gst_pct"), 18.0)
+                line["pick"] = pick
+                if "qty" not in line:
+                    line["qty"] = 1.0
+            st.session_state[key][i] = line
+            st.rerun()
+
         c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 1, 1, 2, 1])
-        item_name = c1.text_input("Item", value=line["item_name"], key=f"{key}_name_{i}")
-        hsn = c2.text_input("HSN", value=line["hsn"], key=f"{key}_hsn_{i}")
-        qty = c3.number_input("Qty", min_value=0.0, value=float(line["qty"]), key=f"{key}_qty_{i}", format="%.2f")
-        uqc = c4.text_input("UQC", value=line["uqc"], key=f"{key}_uqc_{i}")
-        rate = c5.number_input("Rate", min_value=0.0, value=float(line["rate"]), key=f"{key}_rate_{i}", format="%.2f")
-        gst_pct = c6.number_input("GST%", min_value=0.0, value=float(line["gst_pct"]), key=f"{key}_gst_{i}", format="%.2f")
+        item_name = c1.text_input("Item", value=line.get("item_name", ""), key=f"{key}_name_{i}")
+        hsn = c2.text_input("HSN", value=line.get("hsn", ""), key=f"{key}_hsn_{i}")
+        qty = c3.number_input(
+            "Qty",
+            min_value=0.0,
+            value=float(line.get("qty", 1.0)),
+            key=f"{key}_qty_{i}",
+            format="%.2f",
+        )
+        uqc = c4.text_input("UQC", value=line.get("uqc", "OTH"), key=f"{key}_uqc_{i}")
+        rate = c5.number_input(
+            "Rate",
+            min_value=0.0,
+            value=float(line.get("rate", 0.0)),
+            key=f"{key}_rate_{i}",
+            format="%.2f",
+        )
+        gst_pct = c6.number_input(
+            "GST%",
+            min_value=0.0,
+            value=float(line.get("gst_pct", 18.0)),
+            key=f"{key}_gst_{i}",
+            format="%.2f",
+        )
         taxable = line_taxable(qty, rate)
         gst_amt = line_gst(taxable, gst_pct)
-        st.caption(f"Line {i + 1}: taxable ₹{taxable:.2f} · GST ₹{gst_amt:.2f}")
+        if pick != NEW_ITEM:
+            inv = inventory[pick_options.index(pick) - 1]
+            st.caption(
+                f"Taxable ₹{taxable:.2f} · GST ₹{gst_amt:.2f} · "
+                f"on-hand {fnum(inv.get('stock_qty')):g} {inv.get('uqc') or 'OTH'}"
+            )
+        else:
+            st.caption(f"Taxable ₹{taxable:.2f} · GST ₹{gst_amt:.2f} · custom (not in stock master until saved)")
         edited.append(
             {
                 "item_name": item_name,
@@ -136,10 +217,15 @@ def _render_line_editor(key: str) -> list[dict]:
                 "gst_pct": gst_pct,
                 "taxable": taxable,
                 "gst_amt": gst_amt,
+                "pick": pick,
             }
         )
+
     st.session_state[key] = [
-        {k: edited[i][k] for k in ("item_name", "hsn", "qty", "uqc", "rate", "gst_pct")}
+        {
+            k: edited[i][k]
+            for k in ("item_name", "hsn", "qty", "uqc", "rate", "gst_pct", "pick")
+        }
         for i in range(len(edited))
     ]
     return edited
@@ -156,6 +242,10 @@ def _totals_panel(lines: list[dict], round_off: float) -> tuple[float, float, fl
         f"Grand total **₹{grand:.2f}**"
     )
     return taxable, gst, camt, samt, grand
+
+
+def _named_lines(lines: list[dict]) -> list[dict]:
+    return [l for l in lines if (l.get("item_name") or "").strip()]
 
 
 # --- Add sale ---
@@ -206,55 +296,66 @@ if page == "Add sale":
 
     if st.button("Save sale", type="primary"):
         idt = _format_idt(idt_date)
+        named = _named_lines(lines)
         if not inum.strip():
             st.error("Invoice no. is required.")
         elif _invoice_exists(SALES_INVOICES, inum.strip()):
             st.error(f"Sale invoice {inum} already exists.")
-        elif not any(l["item_name"].strip() for l in lines):
+        elif not named:
             st.error("Add at least one line item with a name.")
         else:
-            if save_buyer and buyer_name.strip():
-                upsert_buyer(buyer_name, buyer_gstin, buyer_addr, buyer_phone)
-            append_rows(
-                SALES_INVOICES,
-                SALES_INVOICE_FIELDS,
-                [
-                    {
-                        "inum": inum.strip(),
-                        "idt": idt,
-                        "buyer_name": buyer_name.strip(),
-                        "buyer_gstin": buyer_gstin.strip().upper(),
-                        "buyer_addr": buyer_addr.strip(),
-                        "buyer_phone": buyer_phone.strip(),
-                        "pos": pos.strip() or DEFAULT_POS,
-                        "inv_typ": inv_typ,
-                        "rchrg": rchrg,
-                        "round_off": f"{money(round_off):.2f}",
-                        "grand_total": f"{grand:.2f}",
-                    }
-                ],
-            )
-            item_rows = []
-            for i, line in enumerate(lines, start=1):
-                if not line["item_name"].strip():
-                    continue
-                item_rows.append(
-                    {
-                        "inum": inum.strip(),
-                        "line_num": str(i),
-                        "item_name": line["item_name"].strip(),
-                        "hsn": line["hsn"].strip(),
-                        "qty": f"{money(line['qty']):.2f}",
-                        "uqc": line["uqc"],
-                        "rate": f"{money(line['rate']):.2f}",
-                        "gst_pct": f"{money(line['gst_pct']):.2f}",
-                        "taxable": f"{line['taxable']:.2f}",
-                        "gst_amt": f"{line['gst_amt']:.2f}",
-                    }
+            short = stock_shortfalls(named)
+            if short:
+                st.error(
+                    "Insufficient stock — sale not saved:\n\n- "
+                    + "\n- ".join(short)
+                    + "\n\nAdd stock via **Items** or **Add purchase**, then retry."
                 )
-            append_rows(SALES_ITEMS, SALES_ITEM_FIELDS, item_rows)
-            st.success(f"Saved sale invoice {inum.strip()} (₹{grand:.2f}).")
-            st.session_state["sale_lines"] = [_blank_line(), _blank_line(), _blank_line()]
+            else:
+                if save_buyer and buyer_name.strip():
+                    upsert_buyer(buyer_name, buyer_gstin, buyer_addr, buyer_phone)
+                append_rows(
+                    SALES_INVOICES,
+                    SALES_INVOICE_FIELDS,
+                    [
+                        {
+                            "inum": inum.strip(),
+                            "idt": idt,
+                            "buyer_name": buyer_name.strip(),
+                            "buyer_gstin": buyer_gstin.strip().upper(),
+                            "buyer_addr": buyer_addr.strip(),
+                            "buyer_phone": buyer_phone.strip(),
+                            "pos": pos.strip() or DEFAULT_POS,
+                            "inv_typ": inv_typ,
+                            "rchrg": rchrg,
+                            "round_off": f"{money(round_off):.2f}",
+                            "grand_total": f"{grand:.2f}",
+                        }
+                    ],
+                )
+                item_rows = []
+                for i, line in enumerate(named, start=1):
+                    item_rows.append(
+                        {
+                            "inum": inum.strip(),
+                            "line_num": str(i),
+                            "item_name": line["item_name"].strip(),
+                            "hsn": line["hsn"].strip(),
+                            "qty": f"{money(line['qty']):.2f}",
+                            "uqc": line["uqc"],
+                            "rate": f"{money(line['rate']):.2f}",
+                            "gst_pct": f"{money(line['gst_pct']):.2f}",
+                            "taxable": f"{line['taxable']:.2f}",
+                            "gst_amt": f"{line['gst_amt']:.2f}",
+                        }
+                    )
+                append_rows(SALES_ITEMS, SALES_ITEM_FIELDS, item_rows)
+                skipped = apply_sale_stock(named)
+                msg = f"Saved sale invoice {inum.strip()} (₹{grand:.2f}). Stock decreased for matched items."
+                if skipped:
+                    msg += f" Not in inventory (stock unchanged): {', '.join(skipped)}."
+                st.success(msg)
+                st.session_state["sale_lines"] = [_blank_line(), _blank_line(), _blank_line()]
 
 # --- Add purchase ---
 elif page == "Add purchase":
@@ -276,11 +377,12 @@ elif page == "Add purchase":
 
     if st.button("Save purchase", type="primary"):
         idt = _format_idt(idt_date)
+        named = _named_lines(lines)
         if not inum.strip():
             st.error("Invoice no. is required.")
         elif _invoice_exists(PURCHASES, inum.strip()):
             st.error(f"Purchase invoice {inum} already exists.")
-        elif not any(l["item_name"].strip() for l in lines):
+        elif not named:
             st.error("Add at least one line item with a name.")
         else:
             append_rows(
@@ -302,9 +404,7 @@ elif page == "Add purchase":
                 ],
             )
             item_rows = []
-            for i, line in enumerate(lines, start=1):
-                if not line["item_name"].strip():
-                    continue
+            for i, line in enumerate(named, start=1):
                 item_rows.append(
                     {
                         "inum": inum.strip(),
@@ -320,7 +420,11 @@ elif page == "Add purchase":
                     }
                 )
             append_rows(PURCHASE_ITEMS, PURCHASE_ITEM_FIELDS, item_rows)
-            st.success(f"Saved purchase {inum.strip()} (₹{grand:.2f}).")
+            apply_purchase_stock(named)
+            st.success(
+                f"Saved purchase {inum.strip()} (₹{grand:.2f}). "
+                "Stock increased (new items created in items master if needed)."
+            )
             st.session_state["purchase_lines"] = [_blank_line(), _blank_line(), _blank_line()]
 
 # --- Buyers ---
@@ -385,20 +489,109 @@ elif page == "Buyers":
             st.success(f"Deleted {removed.get('buyer_name', '')}.")
             st.rerun()
 
+# --- Items / inventory ---
+elif page == "Items":
+    st.header("Items (inventory)")
+    st.caption(
+        "Master list for sales/purchases. Stock qty uses the row’s UQC as-is "
+        "(e.g. DOZ for Steel Temple Rolls, NOS for Bush) — no unit conversion."
+    )
+
+    items = read_csv(ITEMS)
+    if items:
+        st.dataframe(pd.DataFrame(items), use_container_width=True)
+    else:
+        st.write("No items yet. Add below, or run `python3 scripts/seed_sample_invoice.py`.")
+
+    st.subheader("Add or edit item")
+    edit_labels = ["— Add new —"] + [item_label(r) for r in items]
+    edit_pick = st.selectbox("Load existing to edit", edit_labels, key="item_edit_pick")
+
+    if edit_pick != st.session_state.get("_item_edit_applied"):
+        st.session_state["_item_edit_applied"] = edit_pick
+        if edit_pick == "— Add new —":
+            st.session_state["item_form_name"] = ""
+            st.session_state["item_form_hsn"] = ""
+            st.session_state["item_form_uqc"] = "OTH"
+            st.session_state["item_form_rate"] = 0.0
+            st.session_state["item_form_gst"] = 18.0
+            st.session_state["item_form_stock"] = 0.0
+            st.session_state["item_edit_idx"] = None
+        else:
+            row = items[edit_labels.index(edit_pick) - 1]
+            st.session_state["item_form_name"] = row.get("item_name", "")
+            st.session_state["item_form_hsn"] = row.get("hsn", "")
+            st.session_state["item_form_uqc"] = row.get("uqc") or "OTH"
+            st.session_state["item_form_rate"] = fnum(row.get("rate"))
+            st.session_state["item_form_gst"] = fnum(row.get("gst_pct"), 18.0)
+            st.session_state["item_form_stock"] = fnum(row.get("stock_qty"))
+            st.session_state["item_edit_idx"] = edit_labels.index(edit_pick) - 1
+        st.rerun()
+
+    for key, default in (
+        ("item_form_name", ""),
+        ("item_form_hsn", ""),
+        ("item_form_uqc", "OTH"),
+        ("item_form_rate", 0.0),
+        ("item_form_gst", 18.0),
+        ("item_form_stock", 0.0),
+    ):
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    name = st.text_input("Item name", key="item_form_name")
+    hsn = st.text_input("HSN", key="item_form_hsn")
+    uqc = st.text_input("UQC", key="item_form_uqc")
+    rate = st.number_input("Default rate", min_value=0.0, key="item_form_rate", format="%.2f")
+    gst_pct = st.number_input("GST %", min_value=0.0, key="item_form_gst", format="%.2f")
+    stock = st.number_input("Stock qty", min_value=0.0, key="item_form_stock", format="%.2f")
+
+    st.markdown("**Quick stock adjust**")
+    adj = st.number_input("Add (+) / remove (−) qty", value=0.0, step=1.0, format="%.2f", key="item_stock_adj")
+    ic1, ic2, ic3 = st.columns(3)
+    if ic1.button("Save item", type="primary"):
+        if not name.strip():
+            st.error("Item name is required.")
+        else:
+            upsert_item(name, hsn, uqc, rate, gst_pct, stock_qty=stock)
+            st.session_state["_item_edit_applied"] = None
+            st.success(f"Saved item {name.strip()} (stock set to {stock:g}).")
+            st.rerun()
+    if ic2.button("Apply +/- to stock"):
+        if not name.strip():
+            st.error("Load or enter an item name first.")
+        elif adj == 0:
+            st.warning("Enter a non-zero adjust amount.")
+        else:
+            upsert_item(name, hsn, uqc, rate, gst_pct, stock_delta=adj)
+            st.session_state["_item_edit_applied"] = None
+            st.success(f"Adjusted stock for {name.strip()} by {adj:g}.")
+            st.rerun()
+    if ic3.button("Delete selected item") and st.session_state.get("item_edit_idx") is not None:
+        idx = st.session_state["item_edit_idx"]
+        rows = read_csv(ITEMS)
+        if 0 <= idx < len(rows):
+            removed = rows.pop(idx)
+            rewrite_csv(ITEMS, ITEM_FIELDS, rows)
+            st.session_state["_item_edit_applied"] = None
+            st.session_state["item_edit_idx"] = None
+            st.success(f"Deleted {removed.get('item_name', '')}.")
+            st.rerun()
+
 # --- List ---
 elif page == "List documents":
     st.header("Saved documents")
     tab_s, tab_p = st.tabs(["Sales", "Purchases"])
     with tab_s:
         sales = read_csv(SALES_INVOICES)
-        items = read_csv(SALES_ITEMS)
+        sale_lines = read_csv(SALES_ITEMS)
         if not sales:
             st.write("No sales yet. Seed with `python3 scripts/seed_sample_invoice.py`.")
         else:
             st.dataframe(pd.DataFrame(sales), use_container_width=True)
             pick = st.selectbox("View items for invoice", [s["inum"] for s in sales])
             st.dataframe(
-                pd.DataFrame([i for i in items if i["inum"] == pick]),
+                pd.DataFrame([i for i in sale_lines if i["inum"] == pick]),
                 use_container_width=True,
             )
     with tab_p:

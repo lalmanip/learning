@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 Handwritten GST invoice: Deepa Handlooms, 31-08-2026, 3 lines, round-off +0.42 → ₹1892.
 
-`data/sales_*.csv` already includes this invoice; `data/buyers.csv` includes Deepa Handlooms. To re-seed:
+Seeds (if missing): `data/buyers.csv` (Deepa Handlooms), `data/items.csv` (Steel Temple Rolls / NBC 6304Z / Bush), plus invoice 934 in sales CSVs. Seed does **not** deduct stock for 934.
 
 ```bash
 python3 scripts/seed_sample_invoice.py --force
@@ -30,17 +30,26 @@ python3 -m streamlit run app.py
 
 Pages:
 
-1. **Add sale** — pick buyer from dropdown (or new), calendar date, line items
-2. **Add purchase** — same shape for supplier bills
-3. **Buyers** — list / add / edit / delete parties (`data/buyers.csv`)
-4. **List documents** — view saved sales/purchases from `data/*.csv`
-5. **Export GSTR JSON** — enter filing period `fp` (e.g. `082026`) and download JSON shaped like the reference sample (`b2b`, `hsn`, `doc_issue`)
+1. **Add sale** — pick buyer + inventory items, calendar date; **blocks** if stock too low
+2. **Add purchase** — pick/create items; **increases** stock (creates master rows if new)
+3. **Buyers** — list / add / edit / delete parties
+4. **Items** — inventory master: HSN, UQC, rate, GST%, stock (set or +/-)
+5. **List documents** — view saved sales/purchases
+6. **Export GSTR JSON** — filing period `fp` (e.g. `082026`)
+
+## Stock convention
+
+- `stock_qty` is numeric in the item’s stored **UQC** (e.g. DOZ for Steel Temple Rolls, NOS for Bush). No dozen↔piece conversion.
+- Sale of an item in the master **decreases** stock; insufficient stock → sale **not saved** (clear error).
+- Custom sale lines not in the master leave stock unchanged.
+- Purchase lines **increase** stock and upsert the items master.
 
 ## Data files
 
 | File | Purpose |
 |------|---------|
 | `data/buyers.csv` | Buyer name, GSTIN, address, phone |
+| `data/items.csv` | Item master + stock qty |
 | `data/sales_invoices.csv` | Sale headers (includes buyer phone for records) |
 | `data/sales_items.csv` | Sale line items |
 | `data/purchases.csv` | Purchase headers |
@@ -53,8 +62,10 @@ python3 scripts/seed_sample_invoice.py --force
 python3 -c "
 import sys; sys.path.insert(0,'src')
 from gstr_export import build_gstr
+from store import read_csv, ITEMS, stock_shortfalls, apply_sale_stock, apply_purchase_stock, fnum
 import json
-print(json.dumps(build_gstr('082026'), indent=2))
+print('items:', read_csv(ITEMS))
+print(json.dumps(build_gstr('082026'), indent=2)[:400], '...')
 "
 ```
 

@@ -9,14 +9,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from store import (  # noqa: E402
-    BUYER_FIELDS,
     BUYERS,
+    ITEMS,
     SALES_INVOICE_FIELDS,
     SALES_INVOICES,
     SALES_ITEM_FIELDS,
     SALES_ITEMS,
     ensure_data_files,
     find_buyer_index,
+    find_item_index,
     line_gst,
     line_taxable,
     money,
@@ -24,6 +25,7 @@ from store import (  # noqa: E402
     rewrite_csv,
     split_cgst_sgst,
     upsert_buyer,
+    upsert_item,
 )
 
 
@@ -33,6 +35,35 @@ SAMPLE_BUYER = {
     "buyer_addr": "Manpur Shiv charan lane",
     "buyer_phone": "",
 }
+
+# Initial stock is a demo on-hand count (UQC as stored). Seeding invoice 934
+# does NOT deduct stock — treat that invoice as historical books data.
+SAMPLE_ITEMS = [
+    {
+        "item_name": "Steel Temple Rolls",
+        "hsn": "8448",
+        "uqc": "DOZ",
+        "rate": 540.0,
+        "gst_pct": 18.0,
+        "stock_qty": 20.0,
+    },
+    {
+        "item_name": "NBC 6304Z",
+        "hsn": "848210",
+        "uqc": "NOS",
+        "rate": 159.54,
+        "gst_pct": 18.0,
+        "stock_qty": 10.0,
+    },
+    {
+        "item_name": "Bush",
+        "hsn": "8448",
+        "uqc": "NOS",
+        "rate": 0.60,
+        "gst_pct": 18.0,
+        "stock_qty": 2000.0,
+    },
+]
 
 SAMPLE_HEADER = {
     "inum": "934",
@@ -117,9 +148,32 @@ def seed_buyer() -> None:
         print("Buyer Deepa Handlooms already present.")
 
 
+def seed_items() -> None:
+    ensure_data_files()
+    rows = read_csv(ITEMS)
+    for spec in SAMPLE_ITEMS:
+        if find_item_index(rows, spec["item_name"]) is None:
+            upsert_item(
+                spec["item_name"],
+                spec["hsn"],
+                spec["uqc"],
+                spec["rate"],
+                spec["gst_pct"],
+                stock_qty=spec["stock_qty"],
+            )
+            print(
+                f"Seeded item: {spec['item_name']} "
+                f"(stock {spec['stock_qty']:g} {spec['uqc']})"
+            )
+            rows = read_csv(ITEMS)
+        else:
+            print(f"Item already present: {spec['item_name']}")
+
+
 def seed(force: bool = False) -> None:
     ensure_data_files()
     seed_buyer()
+    seed_items()
     headers = read_csv(SALES_INVOICES)
     items = read_csv(SALES_ITEMS)
     exists = any(h.get("inum") == "934" for h in headers)
