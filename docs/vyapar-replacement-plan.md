@@ -20,7 +20,24 @@ Seller: **B R Machinery Stores**, GSTIN `10AMAPR5995H1ZW`, POS Bihar `"10"`.
 | buyer_addr | Address |
 | buyer_phone | Store contact only — **not** in GSTR JSON |
 
-UI: **Buyers** page (list / add / edit / delete). **Add sale** picks a buyer from a dropdown and auto-fills fields; optional “save/update buyer” on the sale form.
+UI: **Buyers** page. **Add sale** picks a buyer and auto-fills fields.
+
+### `data/items.csv` (inventory)
+| Column | Notes |
+|--------|--------|
+| item_name | Match key (case-insensitive) |
+| hsn | Default HSN for lines / HSN summary |
+| uqc | Unit of measure (`DOZ`, `NOS`, …) |
+| rate, gst_pct | Defaults for sale/purchase lines |
+| stock_qty | On-hand count **in that UQC** (no dozen↔piece conversion) |
+
+UI: **Items** page (list / add / edit / set stock / +/- adjust).  
+**Add sale** / **Add purchase** pick inventory rows to auto-fill name/HSN/rate/GST/UQC.
+
+**Stock rules**
+- Sale: **block** if matched item qty exceeds stock (clear error). Custom lines not in master do not change stock.
+- Purchase: **increase** stock; create master row if missing.
+- Seed invoice 934 does **not** deduct stock (historical).
 
 ### `data/sales_invoices.csv`
 | Column | Notes |
@@ -38,7 +55,7 @@ UI: **Buyers** page (list / add / edit / delete). **Add sale** picks a buyer fro
 | Column | Notes |
 |--------|--------|
 | inum, line_num | Link to header |
-| item_name, hsn, qty, uqc | Line details (`uqc` default `OTH`) |
+| item_name, hsn, qty, uqc | Line details |
 | rate, gst_pct | Unit rate, GST % |
 | taxable | qty × rate |
 | gst_amt | taxable × gst_pct / 100 |
@@ -46,7 +63,7 @@ UI: **Buyers** page (list / add / edit / delete). **Add sale** picks a buyer fro
 CGST/SGST = half of `gst_amt` when POS is Bihar (intra-state). IGST unused in sample.
 
 ### Purchases
-Same shape: `purchases.csv` + `purchase_items.csv` (supplier_* instead of buyer_*). Stored for books; **not** in GSTR outward export.
+Same shape: `purchases.csv` + `purchase_items.csv` (supplier_* instead of buyer_*). Stored for books; **not** in GSTR outward export. Saving a purchase updates `items.csv` stock.
 
 ## GSTR mapping (`fp` = MMYYYY)
 
@@ -62,17 +79,13 @@ Matches `/internal/gstr-sample.json` shape:
 | `hsn.hsn_b2c` | Zero stub row if no B2C |
 | `doc_issue` | Min/max `inum` for period, `totnum`, `cancel: 0` |
 
-`hash` left as `"hash"` (portal fills real hash). Phone is never exported.
+`hash` left as `"hash"`. Phone / stock are never exported.
 
 ## Sample invoice (seed)
 
-Inv **934**, **31-08-2026**, Deepa Handlooms / `10EVGPK1973R1ZY` (also seeded into `buyers.csv`):
+Inv **934**, **31-08-2026**, Deepa Handlooms / `10EVGPK1973R1ZY` (also in `buyers.csv`).
 
-1. Steel Temple Rolls — HSN 8448 — 2 Dz @ 540 — 18% — taxable 1080 — GST 194.40  
-2. NBC 6304Z — HSN 848210 — 1 @ 159.54 — 18% — taxable 159.54 — GST 28.72  
-3. Bush — HSN 8448 — 607 @ 0.60 — 18% — taxable 364.20 — GST 65.56  
-
-Round-off +0.42 → grand total **1892.00**. Filing period `082026`.
+Items seeded into `items.csv` if missing: Steel Temple Rolls (DOZ), NBC 6304Z (NOS), Bush (NOS).
 
 Run: `python3 scripts/seed_sample_invoice.py`
 
@@ -84,4 +97,4 @@ python3 scripts/seed_sample_invoice.py   # optional
 python3 -m streamlit run app.py
 ```
 
-UI pages: Add Sale, Add Purchase, Buyers, List docs, Export GSTR JSON.
+UI pages: Add Sale, Add Purchase, Buyers, Items, List docs, Export GSTR JSON.
