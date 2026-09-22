@@ -1,0 +1,3 @@
+# Local scratch only — sample seed CSVs are tracked
+*.bak
+*.tmp
