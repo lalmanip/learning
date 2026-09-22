@@ -19,6 +19,7 @@ SALES_INVOICES = DATA_DIR / "sales_invoices.csv"
 SALES_ITEMS = DATA_DIR / "sales_items.csv"
 PURCHASES = DATA_DIR / "purchases.csv"
 PURCHASE_ITEMS = DATA_DIR / "purchase_items.csv"
+BUYERS = DATA_DIR / "buyers.csv"
 
 SALES_INVOICE_FIELDS = [
     "inum",
@@ -26,11 +27,19 @@ SALES_INVOICE_FIELDS = [
     "buyer_name",
     "buyer_gstin",
     "buyer_addr",
+    "buyer_phone",
     "pos",
     "inv_typ",
     "rchrg",
     "round_off",
     "grand_total",
+]
+
+BUYER_FIELDS = [
+    "buyer_name",
+    "buyer_gstin",
+    "buyer_addr",
+    "buyer_phone",
 ]
 
 SALES_ITEM_FIELDS = [
@@ -73,6 +82,25 @@ PURCHASE_ITEM_FIELDS = [
 ]
 
 
+def _migrate_csv_columns(path: Path, fields: list[str]) -> None:
+    """Add any missing columns (e.g. buyer_phone) without dropping data."""
+    if not path.exists() or path.stat().st_size == 0:
+        with path.open("w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=fields).writeheader()
+        return
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        existing = list(reader.fieldnames or [])
+        rows = list(reader)
+    if existing == fields:
+        return
+    rewritten = [{k: row.get(k, "") for k in fields} for row in rows]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rewritten)
+
+
 def ensure_data_files() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     for path, fields in (
@@ -80,10 +108,9 @@ def ensure_data_files() -> None:
         (SALES_ITEMS, SALES_ITEM_FIELDS),
         (PURCHASES, PURCHASE_FIELDS),
         (PURCHASE_ITEMS, PURCHASE_ITEM_FIELDS),
+        (BUYERS, BUYER_FIELDS),
     ):
-        if not path.exists():
-            with path.open("w", newline="", encoding="utf-8") as f:
-                csv.DictWriter(f, fieldnames=fields).writeheader()
+        _migrate_csv_columns(path, fields)
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -92,6 +119,46 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def buyer_label(row: dict[str, str]) -> str:
+    name = (row.get("buyer_name") or "").strip() or "(unnamed)"
+    gstin = (row.get("buyer_gstin") or "").strip()
+    return f"{name} ({gstin})" if gstin else f"{name} (no GSTIN)"
+
+
+def find_buyer_index(rows: list[dict[str, str]], name: str, gstin: str) -> int | None:
+    name_n = name.strip().lower()
+    gstin_n = gstin.strip().upper()
+    for i, row in enumerate(rows):
+        if gstin_n and (row.get("buyer_gstin") or "").strip().upper() == gstin_n:
+            return i
+        if not gstin_n and (row.get("buyer_name") or "").strip().lower() == name_n:
+            return i
+    return None
+
+
+def upsert_buyer(
+    name: str,
+    gstin: str,
+    addr: str,
+    phone: str,
+) -> None:
+    """Insert or update a buyer (match GSTIN if present, else name)."""
+    ensure_data_files()
+    rows = read_csv(BUYERS)
+    payload = {
+        "buyer_name": name.strip(),
+        "buyer_gstin": gstin.strip().upper(),
+        "buyer_addr": addr.strip(),
+        "buyer_phone": phone.strip(),
+    }
+    idx = find_buyer_index(rows, payload["buyer_name"], payload["buyer_gstin"])
+    if idx is None:
+        rows.append(payload)
+    else:
+        rows[idx] = payload
+    rewrite_csv(BUYERS, BUYER_FIELDS, rows)
 
 
 def append_rows(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> None:

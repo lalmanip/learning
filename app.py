@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from gstr_export import build_gstr  # noqa: E402
 from store import (  # noqa: E402
+    BUYER_FIELDS,
+    BUYERS,
     DEFAULT_POS,
     PURCHASE_FIELDS,
     PURCHASE_ITEM_FIELDS,
@@ -29,15 +31,16 @@ from store import (  # noqa: E402
     SALES_ITEMS,
     SELLER_ADDR,
     SELLER_GSTIN,
-    SELLER_NAME,
     append_rows,
+    buyer_label,
     ensure_data_files,
-    fnum,
     line_gst,
     line_taxable,
     money,
     read_csv,
+    rewrite_csv,
     split_cgst_sgst,
+    upsert_buyer,
 )
 
 st.set_page_config(page_title="B R Machinery — GST MVP", layout="wide")
@@ -48,8 +51,10 @@ st.caption(f"{SELLER_ADDR} · GSTIN {SELLER_GSTIN}")
 
 page = st.sidebar.radio(
     "Menu",
-    ["Add sale", "Add purchase", "List documents", "Export GSTR JSON"],
+    ["Add sale", "Add purchase", "Buyers", "List documents", "Export GSTR JSON"],
 )
+
+NEW_BUYER = "— New buyer —"
 
 
 def _blank_line() -> dict:
@@ -70,6 +75,30 @@ def _invoice_exists(path, inum: str) -> bool:
 def _format_idt(d: date) -> str:
     """Store/export as DD-MM-YYYY (CSV + GSTR idt)."""
     return d.strftime("%d-%m-%Y")
+
+
+def _init_sale_buyer_fields() -> None:
+    for key, default in (
+        ("sale_buyer_name", ""),
+        ("sale_buyer_gstin", ""),
+        ("sale_buyer_addr", ""),
+        ("sale_buyer_phone", ""),
+    ):
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+
+def _apply_buyer_to_sale_form(buyer: dict[str, str] | None) -> None:
+    if buyer is None:
+        st.session_state["sale_buyer_name"] = ""
+        st.session_state["sale_buyer_gstin"] = ""
+        st.session_state["sale_buyer_addr"] = ""
+        st.session_state["sale_buyer_phone"] = ""
+    else:
+        st.session_state["sale_buyer_name"] = buyer.get("buyer_name", "")
+        st.session_state["sale_buyer_gstin"] = buyer.get("buyer_gstin", "")
+        st.session_state["sale_buyer_addr"] = buyer.get("buyer_addr", "")
+        st.session_state["sale_buyer_phone"] = buyer.get("buyer_phone", "")
 
 
 def _render_line_editor(key: str) -> list[dict]:
@@ -132,13 +161,41 @@ def _totals_panel(lines: list[dict], round_off: float) -> tuple[float, float, fl
 # --- Add sale ---
 if page == "Add sale":
     st.header("Add sales invoice")
+    _init_sale_buyer_fields()
+
     c1, c2, c3 = st.columns(3)
     inum = c1.text_input("Invoice no.", value="")
     idt_date = c2.date_input("Invoice date", value=date.today(), format="DD/MM/YYYY", key="sale_idt")
     pos = c3.text_input("Place of supply", value=DEFAULT_POS)
-    buyer_name = st.text_input("Buyer name")
-    buyer_gstin = st.text_input("Buyer GSTIN (blank = B2C)")
-    buyer_addr = st.text_input("Buyer address")
+
+    st.subheader("Buyer")
+    buyers = read_csv(BUYERS)
+    labels = [NEW_BUYER] + [buyer_label(b) for b in buyers]
+    pick = st.selectbox(
+        "Select buyer",
+        labels,
+        key="sale_buyer_pick",
+        help="Pick a saved buyer, or choose New buyer and fill the fields (optionally save them).",
+    )
+    if pick != st.session_state.get("_sale_buyer_applied"):
+        st.session_state["_sale_buyer_applied"] = pick
+        if pick == NEW_BUYER:
+            _apply_buyer_to_sale_form(None)
+        else:
+            _apply_buyer_to_sale_form(buyers[labels.index(pick) - 1])
+        st.rerun()
+
+    buyer_name = st.text_input("Buyer name", key="sale_buyer_name")
+    buyer_gstin = st.text_input("Buyer GSTIN (blank = B2C)", key="sale_buyer_gstin")
+    buyer_addr = st.text_input("Buyer address", key="sale_buyer_addr")
+    buyer_phone = st.text_input("Buyer phone", key="sale_buyer_phone")
+    save_buyer = st.checkbox(
+        "Save / update this buyer in buyers.csv",
+        value=(pick == NEW_BUYER),
+        key="sale_save_buyer",
+    )
+    st.caption("Manage the full buyer list under **Buyers** in the sidebar.")
+
     c4, c5, c6 = st.columns(3)
     inv_typ = c4.selectbox("Invoice type", ["R"], index=0)
     rchrg = c5.selectbox("Reverse charge", ["N", "Y"], index=0)
@@ -156,6 +213,8 @@ if page == "Add sale":
         elif not any(l["item_name"].strip() for l in lines):
             st.error("Add at least one line item with a name.")
         else:
+            if save_buyer and buyer_name.strip():
+                upsert_buyer(buyer_name, buyer_gstin, buyer_addr, buyer_phone)
             append_rows(
                 SALES_INVOICES,
                 SALES_INVOICE_FIELDS,
@@ -166,6 +225,7 @@ if page == "Add sale":
                         "buyer_name": buyer_name.strip(),
                         "buyer_gstin": buyer_gstin.strip().upper(),
                         "buyer_addr": buyer_addr.strip(),
+                        "buyer_phone": buyer_phone.strip(),
                         "pos": pos.strip() or DEFAULT_POS,
                         "inv_typ": inv_typ,
                         "rchrg": rchrg,
@@ -263,6 +323,68 @@ elif page == "Add purchase":
             st.success(f"Saved purchase {inum.strip()} (₹{grand:.2f}).")
             st.session_state["purchase_lines"] = [_blank_line(), _blank_line(), _blank_line()]
 
+# --- Buyers ---
+elif page == "Buyers":
+    st.header("Buyers")
+    st.caption("Saved parties for sales. Phone is for store records only — not exported in GSTR JSON.")
+
+    buyers = read_csv(BUYERS)
+    if buyers:
+        st.dataframe(pd.DataFrame(buyers), use_container_width=True)
+    else:
+        st.write("No buyers yet. Add one below, or run `python3 scripts/seed_sample_invoice.py`.")
+
+    st.subheader("Add or edit buyer")
+    edit_labels = ["— Add new —"] + [buyer_label(b) for b in buyers]
+    edit_pick = st.selectbox("Load existing to edit", edit_labels, key="buyer_edit_pick")
+
+    if edit_pick != st.session_state.get("_buyer_edit_applied"):
+        st.session_state["_buyer_edit_applied"] = edit_pick
+        if edit_pick == "— Add new —":
+            st.session_state["buyer_form_name"] = ""
+            st.session_state["buyer_form_gstin"] = ""
+            st.session_state["buyer_form_addr"] = ""
+            st.session_state["buyer_form_phone"] = ""
+            st.session_state["buyer_edit_idx"] = None
+        else:
+            b = buyers[edit_labels.index(edit_pick) - 1]
+            st.session_state["buyer_form_name"] = b.get("buyer_name", "")
+            st.session_state["buyer_form_gstin"] = b.get("buyer_gstin", "")
+            st.session_state["buyer_form_addr"] = b.get("buyer_addr", "")
+            st.session_state["buyer_form_phone"] = b.get("buyer_phone", "")
+            st.session_state["buyer_edit_idx"] = edit_labels.index(edit_pick) - 1
+        st.rerun()
+
+    for key in ("buyer_form_name", "buyer_form_gstin", "buyer_form_addr", "buyer_form_phone"):
+        if key not in st.session_state:
+            st.session_state[key] = ""
+
+    name = st.text_input("Buyer name", key="buyer_form_name")
+    gstin = st.text_input("Buyer GSTIN", key="buyer_form_gstin")
+    addr = st.text_input("Buyer address", key="buyer_form_addr")
+    phone = st.text_input("Buyer phone", key="buyer_form_phone")
+
+    bc1, bc2 = st.columns(2)
+    if bc1.button("Save buyer", type="primary"):
+        if not name.strip():
+            st.error("Buyer name is required.")
+        else:
+            upsert_buyer(name, gstin, addr, phone)
+            st.session_state["_buyer_edit_applied"] = None
+            st.success(f"Saved buyer {name.strip()}.")
+            st.rerun()
+
+    if bc2.button("Delete selected buyer") and st.session_state.get("buyer_edit_idx") is not None:
+        idx = st.session_state["buyer_edit_idx"]
+        rows = read_csv(BUYERS)
+        if 0 <= idx < len(rows):
+            removed = rows.pop(idx)
+            rewrite_csv(BUYERS, BUYER_FIELDS, rows)
+            st.session_state["_buyer_edit_applied"] = None
+            st.session_state["buyer_edit_idx"] = None
+            st.success(f"Deleted {removed.get('buyer_name', '')}.")
+            st.rerun()
+
 # --- List ---
 elif page == "List documents":
     st.header("Saved documents")
@@ -271,7 +393,7 @@ elif page == "List documents":
         sales = read_csv(SALES_INVOICES)
         items = read_csv(SALES_ITEMS)
         if not sales:
-            st.write("No sales yet. Seed with `python scripts/seed_sample_invoice.py`.")
+            st.write("No sales yet. Seed with `python3 scripts/seed_sample_invoice.py`.")
         else:
             st.dataframe(pd.DataFrame(sales), use_container_width=True)
             pick = st.selectbox("View items for invoice", [s["inum"] for s in sales])

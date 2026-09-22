@@ -12,12 +12,22 @@ Seller: **B R Machinery Stores**, GSTIN `10AMAPR5995H1ZW`, POS Bihar `"10"`.
 
 ## CSV schema
 
+### `data/buyers.csv`
+| Column | Notes |
+|--------|--------|
+| buyer_name | Party name |
+| buyer_gstin | Blank = treat as B2C on sales |
+| buyer_addr | Address |
+| buyer_phone | Store contact only — **not** in GSTR JSON |
+
+UI: **Buyers** page (list / add / edit / delete). **Add sale** picks a buyer from a dropdown and auto-fills fields; optional “save/update buyer” on the sale form.
+
 ### `data/sales_invoices.csv`
 | Column | Notes |
 |--------|--------|
 | inum | Invoice no (e.g. 934) |
 | idt | Date `DD-MM-YYYY` |
-| buyer_name, buyer_gstin, buyer_addr | Party |
+| buyer_name, buyer_gstin, buyer_addr, buyer_phone | Party (phone for records) |
 | pos | Place of supply (`10`) |
 | inv_typ | `R` regular |
 | rchrg | `N` / `Y` |
@@ -52,11 +62,11 @@ Matches `/internal/gstr-sample.json` shape:
 | `hsn.hsn_b2c` | Zero stub row if no B2C |
 | `doc_issue` | Min/max `inum` for period, `totnum`, `cancel: 0` |
 
-`hash` left as `"hash"` (portal fills real hash).
+`hash` left as `"hash"` (portal fills real hash). Phone is never exported.
 
 ## Sample invoice (seed)
 
-Inv **934**, **31-08-2026**, Deepa Handlooms / `10EVGPK1973R1ZY`:
+Inv **934**, **31-08-2026**, Deepa Handlooms / `10EVGPK1973R1ZY` (also seeded into `buyers.csv`):
 
 1. Steel Temple Rolls — HSN 8448 — 2 Dz @ 540 — 18% — taxable 1080 — GST 194.40  
 2. NBC 6304Z — HSN 848210 — 1 @ 159.54 — 18% — taxable 159.54 — GST 28.72  
@@ -64,14 +74,14 @@ Inv **934**, **31-08-2026**, Deepa Handlooms / `10EVGPK1973R1ZY`:
 
 Round-off +0.42 → grand total **1892.00**. Filing period `082026`.
 
-Run: `python scripts/seed_sample_invoice.py`
+Run: `python3 scripts/seed_sample_invoice.py`
 
 ## How to run
 
 ```bash
 pip install -r requirements.txt
-python scripts/seed_sample_invoice.py   # optional
-streamlit run app.py
+python3 scripts/seed_sample_invoice.py   # optional
+python3 -m streamlit run app.py
 ```
 
-UI pages: Add Sale, Add Purchase, List docs, Export GSTR JSON.
+UI pages: Add Sale, Add Purchase, Buyers, List docs, Export GSTR JSON.

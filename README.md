@@ -30,16 +30,18 @@ python3 -m streamlit run app.py
 
 Pages:
 
-1. **Add sale** — header + line items (HSN, qty, rate, GST%)
+1. **Add sale** — pick buyer from dropdown (or new), calendar date, line items
 2. **Add purchase** — same shape for supplier bills
-3. **List documents** — view saved sales/purchases from `data/*.csv`
-4. **Export GSTR JSON** — enter filing period `fp` (e.g. `082026`) and download JSON shaped like the reference sample (`b2b`, `hsn`, `doc_issue`)
+3. **Buyers** — list / add / edit / delete parties (`data/buyers.csv`)
+4. **List documents** — view saved sales/purchases from `data/*.csv`
+5. **Export GSTR JSON** — enter filing period `fp` (e.g. `082026`) and download JSON shaped like the reference sample (`b2b`, `hsn`, `doc_issue`)
 
 ## Data files
 
 | File | Purpose |
 |------|---------|
-| `data/sales_invoices.csv` | Sale headers |
+| `data/buyers.csv` | Buyer name, GSTIN, address, phone |
+| `data/sales_invoices.csv` | Sale headers (includes buyer phone for records) |
 | `data/sales_items.csv` | Sale line items |
 | `data/purchases.csv` | Purchase headers |
 | `data/purchase_items.csv` | Purchase line items |
