@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 Handwritten GST invoice: Deepa Handlooms, 31-08-2026, 3 lines, round-off +0.42 → ₹1892.
 
-`data/sales_*.csv` already includes this invoice. To re-seed:
+`data/sales_*.csv` already includes this invoice; `data/buyers.csv` includes Deepa Handlooms. To re-seed:
 
 ```bash
 python3 scripts/seed_sample_invoice.py --force
