@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -64,6 +65,11 @@ def _blank_line() -> dict:
 
 def _invoice_exists(path, inum: str) -> bool:
     return any(r.get("inum") == inum for r in read_csv(path))
+
+
+def _format_idt(d: date) -> str:
+    """Store/export as DD-MM-YYYY (CSV + GSTR idt)."""
+    return d.strftime("%d-%m-%Y")
 
 
 def _render_line_editor(key: str) -> list[dict]:
@@ -128,7 +134,7 @@ if page == "Add sale":
     st.header("Add sales invoice")
     c1, c2, c3 = st.columns(3)
     inum = c1.text_input("Invoice no.", value="")
-    idt = c2.text_input("Date (DD-MM-YYYY)", value="")
+    idt_date = c2.date_input("Invoice date", value=date.today(), format="DD/MM/YYYY", key="sale_idt")
     pos = c3.text_input("Place of supply", value=DEFAULT_POS)
     buyer_name = st.text_input("Buyer name")
     buyer_gstin = st.text_input("Buyer GSTIN (blank = B2C)")
@@ -142,8 +148,9 @@ if page == "Add sale":
     _, _, _, _, grand = _totals_panel(lines, round_off)
 
     if st.button("Save sale", type="primary"):
-        if not inum.strip() or not idt.strip():
-            st.error("Invoice no. and date are required.")
+        idt = _format_idt(idt_date)
+        if not inum.strip():
+            st.error("Invoice no. is required.")
         elif _invoice_exists(SALES_INVOICES, inum.strip()):
             st.error(f"Sale invoice {inum} already exists.")
         elif not any(l["item_name"].strip() for l in lines):
@@ -155,7 +162,7 @@ if page == "Add sale":
                 [
                     {
                         "inum": inum.strip(),
-                        "idt": idt.strip(),
+                        "idt": idt,
                         "buyer_name": buyer_name.strip(),
                         "buyer_gstin": buyer_gstin.strip().upper(),
                         "buyer_addr": buyer_addr.strip(),
@@ -194,7 +201,7 @@ elif page == "Add purchase":
     st.header("Add purchase invoice")
     c1, c2, c3 = st.columns(3)
     inum = c1.text_input("Supplier invoice no.", value="")
-    idt = c2.text_input("Date (DD-MM-YYYY)", value="", key="p_idt")
+    idt_date = c2.date_input("Invoice date", value=date.today(), format="DD/MM/YYYY", key="purchase_idt")
     pos = c3.text_input("Place of supply", value=DEFAULT_POS, key="p_pos")
     supplier_name = st.text_input("Supplier name")
     supplier_gstin = st.text_input("Supplier GSTIN")
@@ -208,8 +215,9 @@ elif page == "Add purchase":
     _, _, _, _, grand = _totals_panel(lines, round_off)
 
     if st.button("Save purchase", type="primary"):
-        if not inum.strip() or not idt.strip():
-            st.error("Invoice no. and date are required.")
+        idt = _format_idt(idt_date)
+        if not inum.strip():
+            st.error("Invoice no. is required.")
         elif _invoice_exists(PURCHASES, inum.strip()):
             st.error(f"Purchase invoice {inum} already exists.")
         elif not any(l["item_name"].strip() for l in lines):
@@ -221,7 +229,7 @@ elif page == "Add purchase":
                 [
                     {
                         "inum": inum.strip(),
-                        "idt": idt.strip(),
+                        "idt": idt,
                         "supplier_name": supplier_name.strip(),
                         "supplier_gstin": supplier_gstin.strip().upper(),
                         "supplier_addr": supplier_addr.strip(),
